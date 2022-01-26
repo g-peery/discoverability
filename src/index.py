@@ -4,6 +4,9 @@ index.py - Create a local cache of relevant manpage information.
 Author: Gabriel Peery
 Date: 1/25/2022
 """
+import bz2
+import enum
+import gzip
 import os
 import subprocess
 from typing import List
@@ -17,10 +20,21 @@ class DependencyNotFoundError(Exception):
     pass
 
 
+class CompressionType(enum.Enum):
+    GZIP = enum.auto()
+    BZIP2 = enum.auto()
+
+
 # TODO - use bz2, gzip packages to open them up. For debug, we'll first
 # inspect how many files are in the archives.
 class ManualPage:
     """Object containing information on a manual page."""
+
+    # Magic bytes
+    _TYPE_LOOKUP = {
+    b"\x1f\x8b" : CompressionType.GZIP,
+    b"BZ" : CompressionType.BZIP2
+    }
 
     def __init__(self, path : str):
         """
@@ -40,7 +54,26 @@ Body:(
 
     def _extract_info(self, path : str):
         """Read info from file to this object."""
-        with open(path, "r") as file_obj:
+        with open(path, "rb") as file_obj:
+            #
+            # Determine File Type
+            # 
+            # Check for magic characters
+            try:
+                compression_type = self._TYPE_LOOKUP[file_obj.read(2)]
+            except KeyError:
+                # TODO - raise appropriate exception for not a good file
+                pass
+            # Go back to start
+            if file_obj.seekable():
+                file_obj.seek(0)
+            else:
+                file_obj.close()
+                file_obj = open(path, "rb")
+
+            # 
+            # Extract information
+            #
             self.main_text = file_obj.read()
 
     def record_path(self, path : str):
