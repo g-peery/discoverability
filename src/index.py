@@ -7,19 +7,12 @@ Date: 1/25/2022
 # BIG TODO - need way to be sure that files are manual pages
 import bz2
 import enum
+from errors import *
 import gzip
 import locale
 import os
 import subprocess
 from typing import List
-
-
-# TODO - move to different error file
-class DependencyNotFoundError(Exception):
-    """
-    Raised when a dependency is detected to be missing or unreachable.
-    """
-    pass
 
 
 class CompressT(enum.Enum):
@@ -33,9 +26,13 @@ class ManualPage:
 
     # Magic bytes
     _TYPE_LOOKUP = {
-    b"\x1f\x8b" : CompressT.GZIP,
-    b"BZ" : CompressT.BZIP2
+        b"\x1f\x8b" : CompressT.GZIP,
+        b"BZ" : CompressT.BZIP2
     }
+
+    # Maximum amount of chars to read in a block from decompressed text
+    # TODO - find fast value of this
+    BLOCK_SIZE = 1024
 
     def __init__(self, path : str, locale : str):
         """
@@ -43,8 +40,11 @@ class ManualPage:
         given path. Will decompress if needed, then handle according to 
         provided locale.
         """
+        # TODO - Is locale still needed?
         self._paths = set()
         self._locale = locale
+        self._title = None
+        self._sections = None
 
         self.record_path(path)
         self._extract_info(path)
@@ -84,51 +84,95 @@ Title:{self._title}"""
             else:
                 zipped_file = file_obj
 
-            # Read plaintext
-            full_text = zipped_file.read().decode(self._locale, "replace")
+            # Parse through file
+            self._parse(zipped_file);
 
             # Close wrapper file object as appropriate
             if compress_t == CompressT.GZIP or compress_t == CompressT.BZIP2:
                 zipped_file.close()
 
-        # Finally, parse through file
-        self._parse(full_text)
-
-    def _parse(self, full_text : str):
+    def _parse(self, zipped_file):
         """Set local variables to store relevant information on page."""
-        lines = full_text.splitlines()
-        lines_iterator = iter(lines)
-
-        # Find man page title
-        self._title = None
+        # Let groff create the plaintext
         try:
-            while self._title is None:
-                line = next(lines_iterator)
-                if line[:3] == ".TH":
-                    # This is the title line. Find the title field.
-                    stop_char = ' ' # Default space
-                    start_pos = 4
-                    if line[4] == '"':
-                        # Case go in between the quotes
-                        stop_char = '"'
-                        start_pos += 1
+            groff_result = subprocess.run(
+                ["groff", "-Tascii", "-man"], # Internationalization ?
+                input=zipped_file.read(),
+                capture_output=True
+            )
+        except FileNotFoundError:
+            raise DependencyNotFoundError("Could not find 'groff' to run.")
 
-                    # Build title character by character
-                    self._title = ""
-                    for idx, c in enumerate(line[start_pos:]):
-                        if c == stop_char:
-                            break
-                        if c == '\\' and not line[start_pos + idx - 1] == '\\':
-                            continue
-                        self._title += c
-                        
-        except StopIteration:
-            # TODO - throw an error that this is not a manpage.
-            pass
+        # Keeping this here in case locales cause issues later
+        #.decode(self._locale, "replace")
+
+        # TODO - debug
+        groff_result.check_returncode()
+
+        # Get decoded full text as list of lines
+        full_text = groff_result.stdout.decode("ascii", "replace").splitlines()
+
+        if len(full_text) == 0:
+            # TODO - handle this case. Often caused by .so commands
+            return
+
+        # Phase 1: Retrieve title
+        line_idx = 0
+        while full_text[line_idx].strip() == '':
+            line_idx += 1
+        self._title = full_text[line_idx].strip().split()[0].split('(')[0]
+
+        #
+        # Phase 2: Read through entire file looking for sections. Keep
+        # the ones considered significant
+        #
+        self._sections = dict()
+
+        current_section = None # Write into this section
+        for line in full_text[1:]:
+            # Skip empty lines
+            if line == '':
+                continue
+
+            # Section titles are uppercase and the line describing them
+            # does not start with a space
+            if (not line[0].isspace()) and line[0].isupper():
+                current_section = None
+                isolated_section_name = line[0].split()[0]
+                if is_desireable_section(isolated_section_name):
+                    current_section = isolate_section_name
+                    self._sections[isolate_section_name] = ""
+                    continue # Don't write name itself
+
+            # Write lines to relevant section
+            if current_section is not None:
+                self._sections[current_section] += '\n' + line
 
     def record_path(self, path : str):
         """Updates object record of paths seen."""
         self._paths.add(path)
+
+
+_GOOD_SECTIONS = None
+
+
+def is_desireable_section(section_name : str) -> bool:
+    """Returns True if section_name is listed in config/.sections"""
+    global _GOOD_SECTIONS
+
+    # Case need to generate
+    if _GOOD_SECTIONS is None:
+        _GOOD_SECTIONS = set()
+
+        try:
+            with open("../config/.sections", "r") as config_file:
+                for line in config_file:
+                    _GOOD_SECTIONS.add(line.upper().strip())
+        except FileNotFoundError:
+            raise FileNotFoundError("config/.sections file is missing!")
+
+    # Then check inside
+    return section_name in _GOOD_SECTIONS
 
 
 def get_manpaths(debug = False):
