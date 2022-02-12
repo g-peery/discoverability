@@ -39,12 +39,15 @@ class ManualPage:
         A manual page object constructed from analyzing the file at the 
         given path. Will decompress if needed, then handle according to 
         provided locale.
+
+        Note that the path should be the real path.
         """
         # TODO - Is locale still needed?
         self._paths = set()
         self._locale = locale
         self._title = None
         self._sections = None
+        self._last_modification_time = None
 
         self.record_path(path)
         self._extract_info(path)
@@ -52,10 +55,16 @@ class ManualPage:
     def __str__(self) -> str:
         """str(self) - Pretty printed string version"""
         return f"""Paths: {str(self._paths)}
-Title:{self._title}"""
+Title:{self._title}
+Modification:{self._last_modification_time}
+"""
 
     def _extract_info(self, path : str):
         """Read info from file to this object."""
+        # Metadata
+        self._last_modification_time = os.path.getmtime(path)
+
+        # Information that requires reading the file
         with open(path, "rb") as file_obj:
             #
             # Determine File Type
