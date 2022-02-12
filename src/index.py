@@ -9,10 +9,11 @@ import bz2
 import enum
 from errors import *
 import gzip
+import json
 import locale
 import os
 import subprocess
-from typing import List
+from typing import List, Tuple
 
 
 class CompressT(enum.Enum):
@@ -161,6 +162,13 @@ Modification:{self._last_modification_time}
         """Updates object record of paths seen."""
         self._paths.add(path)
 
+    def get_save_info(self) -> Tuple[str, dict]:
+        """Returns the title and dictionary of things worth caching."""
+        return self._title, {
+            "paths" : list(self._paths),
+            "modification" : self._last_modification_time
+        }
+
 
 _GOOD_SECTIONS = None
 
@@ -224,6 +232,7 @@ def index(paths : List[str], verbose : bool=False):
         except OSError:
             term_size = 80
 
+    # Get Python objects
     pages = dict() # Collection of ManualPage objects
     for path in paths:
         # Walk each tree
@@ -246,6 +255,17 @@ def index(paths : List[str], verbose : bool=False):
                 else:
                     # nth time analysis.
                     pages[real_path].record_path(full_path)
+
+    # Save python objects
+    dump_str = json.dumps({
+        title : data for title, data in map(
+            ManualPage.get_save_info, pages.values()
+        )
+    }) + "\n"
+    print("Writing to cache...")
+    with bz2.open("../cache/.discoverability_cache", "wb") as cache:
+        cache.write(bytes(dump_str, 'ascii'))
+    print("...done.")
 
 
 def main():
