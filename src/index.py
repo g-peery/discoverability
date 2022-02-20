@@ -4,13 +4,12 @@ index.py - Create a local cache of relevant manpage information.
 Author: Gabriel Peery
 Date: 1/25/2022
 """
-# BIG TODO - need way to be sure that files are manual pages
+import argparse
 import bz2
 import enum
 from errors import *
 import gzip
 import json
-import locale
 import os
 import subprocess
 from typing import List, Tuple
@@ -35,23 +34,20 @@ class ManualPage:
     # TODO - find fast value of this
     BLOCK_SIZE = 1024
 
-    def __init__(self, path : str, locale : str):
+    def __init__(self, path : str):
         """
         A manual page object constructed from analyzing the file at the 
-        given path. Will decompress if needed, then handle according to 
-        provided locale.
+        given path. Will decompress if needed.
 
         Note that the path should be the real path.
         """
-        # TODO - Is locale still needed?
         self._paths = set()
-        self._locale = locale
         self._title = None
         self._sections = None
         self._last_modification_time = None
+        self._need_to_extract = True
 
         self.record_path(path)
-        self._extract_info(path)
 
     def __str__(self) -> str:
         """str(self) - Pretty printed string version"""
@@ -113,17 +109,12 @@ Modification:{self._last_modification_time}
         except FileNotFoundError:
             raise DependencyNotFoundError("Could not find 'groff' to run.")
 
-        # Keeping this here in case locales cause issues later
-        #.decode(self._locale, "replace")
-
-        # TODO - debug
-        groff_result.check_returncode()
-
         # Get decoded full text as list of lines
         full_text = groff_result.stdout.decode("ascii", "replace").splitlines()
 
         if len(full_text) == 0:
-            # TODO - handle this case. Often caused by .so commands
+            # Likely caused by another file being sourced into this one
+            # Still need to extract, so don't change that
             return
 
         # Phase 1: Retrieve title
@@ -158,9 +149,14 @@ Modification:{self._last_modification_time}
             if current_section is not None:
                 self._sections[current_section] += '\n' + line
 
+        # No need to extract any longer
+        self._need_to_extract = False
+
     def record_path(self, path : str):
         """Updates object record of paths seen."""
         self._paths.add(path)
+        if self._need_to_extract:
+            self._extract_info(path)
 
     def get_save_info(self) -> Tuple[str, dict]:
         """Returns the title and dictionary of things worth caching."""
@@ -171,22 +167,28 @@ Modification:{self._last_modification_time}
 
 
 _GOOD_SECTIONS = None
+SECTION_FILE = None
 
 
 def is_desireable_section(section_name : str) -> bool:
-    """Returns True if section_name is listed in config/.sections"""
-    global _GOOD_SECTIONS
+    """Returns True if section_name is listed in SECTION_FILE."""
+    global _GOOD_SECTIONS, SECTION_FILE
 
     # Case need to generate
     if _GOOD_SECTIONS is None:
         _GOOD_SECTIONS = set()
 
+        # Determine where the file is
+        if SECTION_FILE is None:
+            SECTION_FILE = os.path.join(os.path.dirname(__file__),
+                    "../config/.sections")
+
         try:
-            with open("../config/.sections", "r") as config_file:
+            with open(SECTION_FILE, "r") as config_file:
                 for line in config_file:
                     _GOOD_SECTIONS.add(line.upper().strip())
         except FileNotFoundError:
-            raise FileNotFoundError("config/.sections file is missing!")
+            raise FileNotFoundError(f"{SECTION_FILE} file is missing!")
 
     # Then check inside
     return section_name in _GOOD_SECTIONS
@@ -215,16 +217,13 @@ def get_manpaths(debug = False):
         raise DependencyNotFoundError("Could not find 'manpath' to run.")
 
 
-def index(paths : List[str], verbose : bool=False):
+def index(paths : List[str], verbose : bool, cache_file : str):
     """
     For each path in the list of strings, searches for manual pages.
     If verbose, then prints useful debug information.
 
     Note that bad things will happen if there are link loops.
     """
-    # This will be needed to parse pages
-    encoding = locale.getdefaultlocale()[1]
-
     # Prepare pretty printing
     if verbose:
         try:
@@ -232,6 +231,7 @@ def index(paths : List[str], verbose : bool=False):
         except OSError:
             term_size = 80
 
+    print("Walking manpath...")
     # Get Python objects
     pages = dict() # Collection of ManualPage objects
     for path in paths:
@@ -247,7 +247,7 @@ def index(paths : List[str], verbose : bool=False):
                     if verbose:
                         print(real_path.center(term_size, "-"))
 
-                    page = ManualPage(real_path, encoding)
+                    page = ManualPage(real_path)
                     pages[real_path] = page
 
                     if verbose:
@@ -255,6 +255,7 @@ def index(paths : List[str], verbose : bool=False):
                 else:
                     # nth time analysis.
                     pages[real_path].record_path(full_path)
+    print("...done.")
 
     # Save python objects
     dump_str = json.dumps({
@@ -262,16 +263,36 @@ def index(paths : List[str], verbose : bool=False):
             ManualPage.get_save_info, pages.values()
         )
     }) + "\n"
+
+    # Default cache file
+    if cache_file is None:
+        cache_file = os.path.join(os.path.dirname(__file__),
+                "../cache/discoverability_cache")
+
     print("Writing to cache...")
-    with bz2.open("../cache/.discoverability_cache", "wb") as cache:
+    with bz2.open(cache_file, "wb") as cache:
         cache.write(bytes(dump_str, 'ascii'))
     print("...done.")
 
 
 def main():
-    # TODO - accept command line arguments
+    global SECTION_FILE
+    
+    # Deal with command line arguments
+    parser = argparse.ArgumentParser(description="Create a cache of "
+            "text information from manpage files.")
+    parser.add_argument("-v", action='store_const', const=True, default=False,
+            help="Verbose output")
+    parser.add_argument("-c", "--cache", metavar="CACHE", type=str,
+            default=None, help="Destination cache file")
+    parser.add_argument("-s", "--sections", metavar="SECTIONS", type=str,
+            default=None, help="Source sections to look for in pages")
+    args = parser.parse_args()
+    SECTION_FILE = args.sections
+
+    # Retrieve information
     paths = get_manpaths()
-    index(paths, True)
+    index(paths, args.v, args.cache)
 
 
 if __name__ == "__main__":
