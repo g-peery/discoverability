@@ -9,6 +9,7 @@ import bz2
 import enum
 from errors import *
 import gzip
+import model
 import os
 import re
 import subprocess
@@ -21,6 +22,7 @@ class _CompressT(enum.Enum):
     BZIP2 = enum.auto()
 
 
+# TODO - separate caching behavior from training
 class ManualPage:
     """Object containing information on a manual page."""
 
@@ -46,6 +48,7 @@ class ManualPage:
         self._sections = None
         self._last_modification_time = None
         self._need_to_extract = True
+        self._model = get_model()
 
         self.record_path(path)
 
@@ -150,8 +153,22 @@ Modification:{self._last_modification_time}
             if current_section is not None:
                 self._sections[current_section] += line.strip() + " "
 
+        # Clean up
+        # This also acts as a good test of whether any sections were
+        # found. By the manpage standard, there must at least be a NAME
+        # field.
+        # TODO - this is the manual page detector
+        self._clean_data()
+
         # No need to extract any longer
         self._need_to_extract = False
+
+    def _clean_data(self):
+        """Puts section data through preprocessing."""
+        for section in self._sections:
+            self._sections[section] = self._model.preprocess(
+                self._sections[section]
+            )
 
     def record_path(self, path : str):
         """Updates object record of paths seen."""
@@ -225,6 +242,8 @@ def set_section_file(new_section_file_name : Union[str, None]):
     None, in which case variables will simply be reset and sections will
     be read the next time they are needed.
     """
+    global _GOOD_SECTIONS, _SECTION_FILE
+
     # Check type
     if type(new_section_file_name) not in [str, type(None)]:
         raise TypeError("Section file name must be a string.")
@@ -232,3 +251,28 @@ def set_section_file(new_section_file_name : Union[str, None]):
     _GOOD_SECTIONS = None
     _SECTION_FILE = new_section_file_name
     
+
+_MODEL = None
+
+
+def set_model(new_model : model.Model):
+    """Sets the model for the interface to use."""
+    global _MODEL
+
+    # Check type
+    if type(new_model) != model.Model:
+        raise TypeError("Model must be a model.Model instance")
+    # Reset variables
+    _MODEL = new_model
+
+
+def get_model() -> model.Model:
+    """Retrieves the model the interface is using, or sets default."""
+    global _MODEL
+
+    if _MODEL is None:
+        # Set to default
+        _MODEL = model.Model() # TODO - will need to take from file
+
+    return _MODEL
+
