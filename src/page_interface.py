@@ -9,6 +9,7 @@ import bz2
 import enum
 from errors import *
 import gzip
+from hashlib import sha1
 import model
 import os
 import re
@@ -36,18 +37,58 @@ class ManualPage:
     # TODO - find fast value of this
     BLOCK_SIZE = 1024
 
+    @staticmethod
+    def _name_valid(split_name : List[str]) -> bool:
+        """
+        Returns true if name looks like it could be to a manual page.
+        """
+        return split_name[-2].isnumeric() and len(split_name) >= 3
+
+    @staticmethod
+    def _get_name_and_section(path : str) -> Tuple[str, int]:
+        """
+        Retrieves the name and section of the manual page at path.
+        Raises ValueError if can't read it.
+        """
+        split_name = path.split(os.path.sep)[-1].split(".")
+
+        # Plaintext case:
+        if split_name[-1].isnumeric():
+            return ".".join(split_name[:-1]), int(split_name[-1])
+
+        # Else, it is some other file, we can check further:
+        # Perform weak check for compressed files
+        if not ManualPage._name_valid(split_name):
+            raise ValueError(f"{path} doesn't look like a manual page.")
+
+        return ".".join(split_name[:-2]), int(split_name[-2])
+
+    @staticmethod
+    def get_name(path : str) -> str:
+        """
+        From a path to a manual page, retrieves the title of the manual
+        page, if it can be recognized. Raises a value error if can't
+        read.
+        """
+        name, section = ManualPage._get_name_and_section(path)
+        return name + f" ({section})"
+
     def __init__(self, path : str):
         """
         A manual page object constructed from analyzing the file at the 
         given path. Will decompress if needed.
 
-        Note that the path should be the real path.
+        Note that the path should be the real path. If can't be read,
+        will raise an error.
         """
-        self._paths = set()
-        self._title = None
-        self._sections = None
-        self._last_modification_time = None
-        self._need_to_extract = True
+        self._paths = [ ]
+        # Note: following may throw and error
+        self._title, self._section_number = ManualPage._get_name_and_section(
+            path
+        )
+        self._sections = dict()
+        self._last_modification_time = 0 # Sentinel 
+        self._hashes = set()
         self._model = get_model()
 
         self.record_path(path)
@@ -56,14 +97,12 @@ class ManualPage:
         """str(self) - Pretty printed string version"""
         return f"""Paths: {str(self._paths)}
 Title:{self._title}
+Section:{self._section_number}
 Modification:{self._last_modification_time}
 """
 
     def _extract_info(self, path : str):
         """Read info from file to this object."""
-        # Metadata
-        self._last_modification_time = os.path.getmtime(path)
-
         # Information that requires reading the file
         with open(path, "rb") as file_obj:
             #
@@ -94,23 +133,33 @@ Modification:{self._last_modification_time}
                 zipped_file = file_obj
 
             # Parse through file
-            self._parse(zipped_file);
+            self._parse(zipped_file, path);
 
             # Close wrapper file object as appropriate
             if compress_t == _CompressT.GZIP or compress_t == _CompressT.BZIP2:
                 zipped_file.close()
 
-    def _parse(self, zipped_file):
+    def _parse(self, zipped_file, path : str):
         """Set local variables to store relevant information on page."""
         # Let groff create the plaintext
         try:
             groff_result = subprocess.run(
                 ["groff", "-Tascii", "-man"], # Internationalization ?
                 input=zipped_file.read(),
-                capture_output=True
+                capture_output=True,
+                cwd=os.path.dirname(path)
             )
         except FileNotFoundError:
             raise DependencyNotFoundError("Could not find 'groff' to run.")
+
+        # First, check if we need to record
+        hasher = sha1()
+        this_hash = hasher.update(groff_result.stdout)
+        if this_hash in self._hashes:
+            # Very likely already seen, don't continue
+            return
+        # If here, definitely haven't seen yet.
+        self._hashes.add(this_hash)
 
         # Get decoded full text as list of lines
         # Get rid of bold/italic weirdness
@@ -123,18 +172,15 @@ Modification:{self._last_modification_time}
             # Still need to extract, so don't change that
             return
 
-        # Phase 1: Retrieve title
+        # Phase 1: Go past title
         line_idx = 0
         while full_text[line_idx].strip() == '':
             line_idx += 1
-        self._title = full_text[line_idx].strip().split()[0].split('(')[0]
 
         #
         # Phase 2: Read through entire file looking for sections. Keep
         # the ones considered significant
         #
-        self._sections = dict()
-
         current_section = None # Write into this section
         for line in full_text[1:]:
             # Skip empty lines
@@ -146,40 +192,55 @@ Modification:{self._last_modification_time}
                 isolated_section_name = line.strip()
                 if _is_desireable_section(isolated_section_name):
                     current_section = isolated_section_name
-                    self._sections[isolated_section_name] = ""
+                    if isolated_section_name in self._sections:
+                        self._sections[isolated_section_name] += " "
+                    else:
+                        self._sections[isolated_section_name] = ""
                     continue # Don't write name itself
 
             # Write lines to relevant section
             if current_section is not None:
                 self._sections[current_section] += line.strip() + " "
 
-        # Clean up
-        # This also acts as a good test of whether any sections were
-        # found. By the manpage standard, there must at least be a NAME
-        # field.
-        # TODO - this is the manual page detector
-        self._clean_data()
-
-        # No need to extract any longer
-        self._need_to_extract = False
-
     def _clean_data(self):
-        """Puts section data through preprocessing."""
+        """
+        Puts section data through preprocessing. Returns true if there
+        were sections to be found.
+        """
+        if len(self._sections) == 0:
+            return False
         for section in self._sections:
             self._sections[section] = self._model.preprocess(
                 self._sections[section]
             )
+        return True
 
     def record_path(self, path : str):
         """Updates object record of paths seen."""
-        self._paths.add(path)
-        if self._need_to_extract:
-            self._extract_info(path)
+        # Record that this was called
+        self._paths.append(path)
+        # See if need to update time
+        self_last_modification_time = max(
+            os.path.getmtime(path), self._last_modification_time
+        )
+        # Extract any new information
+        self._extract_info(path)
 
     def get_save_info(self) -> Tuple[str, dict]:
         """Returns the title and dictionary of things worth caching."""
-        return self._title, {
-            "paths" : list(self._paths),
+        # Clean up data first
+        # This also acts as a good test of whether any sections were
+        # found. By the manpage standard, there must at least be a NAME
+        # field.
+        if not self._clean_data():
+            raise NoDataReadError(f"No data was read for {self._title}.")
+
+        # Put in a nice format
+        compound_title = self._title + f" ({self._section_number})"
+        return compound_title, {
+            "title" : self._title,
+            "section" : self._section_number,
+            "paths" : self._paths,
             "modification" : self._last_modification_time,
             "sections" : self._sections
         }
@@ -222,7 +283,7 @@ def _is_desireable_section(section_name : str) -> bool:
 
         # Determine where the file is
         if _SECTION_FILE is None:
-            _SECTION_FILE = os.path.join(os.path.dirname(__file__),
+            _SECTION_FILE = os.path.join(os.path.abspath(""),
                     "../config/.sections")
 
         try:
@@ -250,7 +311,7 @@ def set_section_file(new_section_file_name : Union[str, None]):
     # Reset variables
     _GOOD_SECTIONS = None
     _SECTION_FILE = new_section_file_name
-    
+
 
 _MODEL = None
 

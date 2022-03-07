@@ -23,7 +23,7 @@ def get_manpaths(debug = False):
     """
     # For debugging
     if debug:
-        test_path = os.path.join(os.path.dirname(__file__),
+        test_path = os.path.join(os.path.abspath(""),
                 "../test/test_pages")
         return [test_path]
 
@@ -58,43 +58,61 @@ def index(paths : List[str], verbose : bool, cache_file : str):
 
     print("Walking manpath...")
     # Get Python objects
-    pages = dict() # Collection of ManualPage objects
+    pages = dict() # Collection of ManualPage objects, keys are names
     for path in paths:
         # Walk each tree
         for dirpath, _, files in os.walk(path, followlinks=True):
             # Examine files
             for file_iter in files:
+                # Extract path information
                 full_path = os.path.join(dirpath, file_iter)
                 real_path = os.path.realpath(full_path)
+                try:
+                    name = pi.ManualPage.get_name(real_path)
+                except ValueError:
+                    # Happens when wasn't a manual page, just ignore
+                    if verbose:
+                        print(("Skipped " + real_path).center(term_size, "%"))
+                    continue
+
                 # Check if already seen
-                if real_path not in pages:
+                if name not in pages:
                     # First time analysis
                     if verbose:
                         print(real_path.center(term_size, "-"))
 
                     page = pi.ManualPage(real_path)
-                    pages[real_path] = page
+                    pages[name] = page
 
                     if verbose:
                         print(page)
                 else:
                     # nth time analysis.
-                    pages[real_path].record_path(full_path)
+                    pages[name].record_path(full_path)
     print("...done.")
 
     # Save python objects
-    dump_str = json.dumps({
-        title : data for title, data in map(
-            pi.ManualPage.get_save_info, pages.values()
-        )
-    }) + "\n"
+    print("Writing to cache...")
+    # First, construct the dictionary
+    dict_to_dump = dict()
+    for name, page in pages.items():
+        try:
+            title, data = pi.ManualPage.get_save_info(page)
+            dict_to_dump[title] = data
+        except NoDataReadError:
+            # Happens when empty, just ignore
+            if verbose:
+                print(f"No data was read from {name}")
+            pass
+
+    # Convert to string
+    dump_str = json.dumps(dict_to_dump) + "\n"
 
     # Default cache file
     if cache_file is None:
-        cache_file = os.path.join(os.path.dirname(__file__),
+        cache_file = os.path.join(os.path.abspath(""),
                 "../cache/discoverability_cache")
 
-    print("Writing to cache...")
     with bz2.open(cache_file, "wb") as cache:
         cache.write(bytes(dump_str, 'ascii'))
     print("...done.")

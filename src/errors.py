@@ -10,3 +10,11 @@ class DependencyNotFoundError(Exception):
     """
     pass
 
+
+class NoDataReadError(Exception):
+    """
+    Raised when no data was read from a manual page, but data is
+    requested.
+    """
+    pass
+
