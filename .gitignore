@@ -4,3 +4,4 @@ cache/.discoverability_cache
 .ipynb_checkpoints/
 Workspace.ipynb
 cache/discoverability_cache
+cache/

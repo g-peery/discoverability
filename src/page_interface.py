@@ -283,8 +283,12 @@ def _is_desireable_section(section_name : str) -> bool:
 
         # Determine where the file is
         if _SECTION_FILE is None:
-            _SECTION_FILE = os.path.join(os.path.abspath(""),
-                    "../config/.sections")
+            _SECTION_FILE = os.path.join(
+                os.path.dirname(os.path.abspath(__file__)),
+                os.path.pardir,
+                "config",
+                ".sections"
+            )
 
         try:
             with open(_SECTION_FILE, "r") as config_file:

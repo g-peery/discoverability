@@ -23,8 +23,12 @@ def get_manpaths(debug = False):
     """
     # For debugging
     if debug:
-        test_path = os.path.join(os.path.abspath(""),
-                "../test/test_pages")
+        test_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            os.path.pardir(),
+            "test",
+            "test_pages"
+        )
         return [test_path]
 
     #
@@ -110,8 +114,12 @@ def index(paths : List[str], verbose : bool, cache_file : str):
 
     # Default cache file
     if cache_file is None:
-        cache_file = os.path.join(os.path.abspath(""),
-                "../cache/discoverability_cache")
+        cache_file = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            os.path.pardir,
+            "cache",
+            "discoverability_cache"
+        )
 
     with bz2.open(cache_file, "wb") as cache:
         cache.write(bytes(dump_str, 'ascii'))
